@@ -175,6 +175,27 @@
   #musicBtn { font-size: 16px; }
   #musicBtn[aria-pressed="true"] { background: var(--paper-2); }
 
+  /* ── 들어가기 막(브라우저가 소리 자동재생을 막을 때만) ── */
+  #enter {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+    padding: 0; border: 0;
+    font: inherit; color: var(--ink);
+    background: rgba(59, 42, 32, .45);
+    cursor: pointer;
+  }
+  #enter[hidden] { display: none; }
+  #enter span {
+    padding: 12px 24px;
+    font-size: clamp(18px, 4.6vw, 24px); font-weight: 700;
+    background: var(--paper);
+    border: 3px solid var(--ink); box-shadow: 4px 4px 0 var(--ink);
+  }
+  #enter small { font-size: 14px; color: var(--paper); }
+  #enter:hover span, #enter:focus-visible span { background: var(--paper-2); }
+  #enter:focus-visible { outline: none; }
+  #title { z-index: 11; }
+
   @media (prefers-reduced-motion: reduce) {
     #title { transition: none; }
     #speech, #speech.pop { animation: none; transition: none; }
@@ -205,8 +226,10 @@
 <div class="hud">
   <button id="zoomOut" type="button" aria-label="멀리 보기">−</button>
   <button id="zoomIn" type="button" aria-label="가까이 보기">+</button>
-  <button id="musicBtn" type="button" aria-pressed="false" aria-label="배경음악 켜기">♪ 음악</button>
+  <button id="musicBtn" type="button" aria-pressed="true" aria-label="배경음악 끄기">♪ 음악 끄기</button>
 </div>
+
+<button id="enter" type="button" hidden><span>▶ 마을에 들어가기</span><small>♪ 음악이 함께 나와요</small></button>
 
 <script src="village.js"></script>
 <script>
@@ -428,34 +451,40 @@
   const music = new Audio("music.mp3");
   music.loop = true;
   music.volume = MUSIC_VOLUME;
-  let musicMuted = false, musicTried = false;
+  // 음악은 기본 켜짐 — 끄기 단추를 누른 사람만 꺼진다
+  let musicMuted = false;
   function renderMusic() {
-    const on = !music.paused;
+    const on = !musicMuted;
     musicBtn.setAttribute("aria-pressed", String(on));
-    musicBtn.textContent = on ? "♪ 음악 끄기" : "♪ 음악";
+    musicBtn.textContent = on ? "♪ 음악 끄기" : "♪ 음악 켜기";
     musicBtn.setAttribute("aria-label", on ? "배경음악 끄기" : "배경음악 켜기");
   }
-  function playMusic() { return music.play().then(renderMusic).catch(() => { renderMusic(); throw 0; }); }
-  // 열자마자 먼저 틀어 본다. 브라우저가 막으면 첫 손길(어디든 누르기·아무 키) 때 바로 켠다.
+  function playMusic() { return music.play(); }
   function startMusicOnce() {
     if (musicMuted || !music.paused) return;
     playMusic().catch(() => {});
   }
+  // 열자마자 먼저 틀어 본다. 브라우저가 막으면 「들어가기」 막을 띄우고,
+  // 첫 손길(어디든 누르기·아무 키)에 막을 걷으며 바로 켠다.
+  const enterEl = document.getElementById("enter");
+  const KICKS = ["pointerdown", "keydown", "touchend"];
+  function kick(e) {
+    enterEl.hidden = true;
+    if (e.target?.closest?.("#musicBtn")) return;   // 음악 단추는 자기 클릭으로 처리
+    if (musicMuted) return;
+    playMusic().then(() => KICKS.forEach(t => removeEventListener(t, kick, true))).catch(() => {});
+  }
   playMusic().catch(() => {
-    const kick = e => {
-      if (e.target?.closest?.("#musicBtn")) return;   // 음악 단추는 자기 클릭으로 켠다
-      ["pointerdown", "keydown", "touchend"].forEach(t => removeEventListener(t, kick, true));
-      startMusicOnce();
-    };
-    ["pointerdown", "keydown", "touchend"].forEach(t => addEventListener(t, kick, true));
+    if (musicMuted) return;
+    enterEl.hidden = false;
+    enterEl.focus({ preventScroll: true });
+    KICKS.forEach(t => addEventListener(t, kick, true));
   });
-  // 음악 단추는 켜져 있으면 끄고, 꺼져 있으면 켠다
   musicBtn.addEventListener("click", () => {
-    if (music.paused) { musicMuted = false; playMusic().catch(() => {}); }
-    else { musicMuted = true; music.pause(); renderMusic(); }
+    musicMuted = !musicMuted;
+    if (musicMuted) music.pause(); else playMusic().catch(() => {});
+    renderMusic();
   });
-  music.addEventListener("pause", renderMusic);
-  music.addEventListener("play", renderMusic);
 
   function updateCamera() {
     const cx = player.x - viewW / 2;
