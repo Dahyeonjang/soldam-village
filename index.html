@@ -1,0 +1,695 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>솔담 빌리지</title>
+<meta name="description" content="AI 에이전트들이 사는 작은 픽셀 마을을 걸어 다니며 주민들을 만나 보세요.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/galmuri@2.40.3/dist/galmuri.css">
+<style>
+  :root {
+    --ink: #3b2a20;
+    --paper: #fff8e7;
+    --paper-2: #ffe9b8;
+    --accent: #e7784c;
+    --shadow: rgba(59, 42, 32, .35);
+    --font: "Galmuri11", "Galmuri9", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: #5a8f4a;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    font-family: var(--font);
+    color: var(--ink);
+  }
+  #stage {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: pointer;
+  }
+
+  /* ── 제목 카드 ── */
+  #title {
+    position: fixed; left: 0; right: 0; top: 14vh;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    pointer-events: none;
+    transition: opacity .8s ease;
+  }
+  #title.fade { opacity: 0; }
+  #title.gone { display: none; }
+  #title h1 {
+    margin: 0;
+    padding: 10px 22px;
+    font-size: clamp(26px, 6vw, 44px);
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--paper);
+    background: var(--ink);
+    border: 3px solid var(--paper);
+    box-shadow: 4px 4px 0 var(--ink);
+  }
+  #title p {
+    margin: 0;
+    padding: 6px 12px;
+    font-size: clamp(13px, 3.4vw, 17px);
+    color: var(--ink);
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+    text-align: center;
+    max-width: calc(100vw - 32px);
+  }
+
+  /* ── 말풍선 ── */
+  #speech {
+    position: fixed;
+    left: 50%; bottom: max(16px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    width: min(560px, calc(100vw - 32px));
+    display: flex; gap: 12px; align-items: flex-start;
+    padding: 12px 14px 14px 12px;
+    background: var(--paper);
+    border: 3px solid var(--ink);
+    box-shadow: 4px 4px 0 var(--ink), inset 0 0 0 2px var(--paper-2);
+    cursor: pointer;
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  #speech[hidden] { display: none; }
+  #speech.pop { animation: pop .18s steps(3) both; }
+  @keyframes pop {
+    from { transform: translate(-50%, 10px); opacity: 0; }
+    to   { transform: translate(-50%, 0);    opacity: 1; }
+  }
+  #speech::before { /* 꼬리 */
+    content: "";
+    position: absolute; top: -12px; left: 50%;
+    width: 12px; height: 12px;
+    margin-left: -6px;
+    background: var(--paper);
+    border-top: 3px solid var(--ink); border-left: 3px solid var(--ink);
+    transform: rotate(45deg);
+  }
+  #portrait {
+    flex: none;
+    width: 56px; height: 56px;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: var(--paper-2);
+    border: 3px solid var(--ink);
+  }
+  #speech .text { flex: 1 1 auto; min-width: 0; }
+  #npcName {
+    display: inline-block;
+    font-weight: 700;
+    font-size: 17px;
+    padding: 1px 8px 0;
+    margin-bottom: 6px;
+    background: var(--accent);
+    color: var(--paper);
+    border: 2px solid var(--ink);
+  }
+  #npcText {
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.55;
+    min-height: calc(1.55em * 2);
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+  }
+  #more {
+    display: none;
+    position: absolute; right: 44px; bottom: 6px;
+    font-size: 13px;
+    opacity: .7;
+    animation: blink 1s steps(2) infinite;
+  }
+  #speech.has-more #more { display: block; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #closeBtn {
+    position: absolute; right: -3px; top: -3px;
+    width: 30px; height: 30px;
+    padding: 0;
+    font: inherit; font-size: 18px; line-height: 1;
+    color: var(--paper);
+    background: var(--ink);
+    border: 3px solid var(--ink);
+    cursor: pointer;
+  }
+  #closeBtn:hover, #closeBtn:focus-visible { background: var(--accent); outline: none; }
+
+  /* ── 작은 지도 ── */
+  #minimap {
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
+    width: min(220px, 34vw); height: auto;
+    image-rendering: pixelated;
+    border: 3px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+    background: var(--paper-2);
+    cursor: pointer;
+  }
+
+  /* ── 단추들(확대·축소·음악) ── */
+  .hud {
+    position: fixed; display: flex; gap: 8px;
+    left: max(12px, env(safe-area-inset-left)); top: max(12px, env(safe-area-inset-top));
+  }
+  .hud button {
+    min-width: 40px; height: 40px; padding: 0 10px;
+    font: inherit; font-size: 20px; line-height: 1; font-weight: 700;
+    color: var(--ink); background: var(--paper);
+    border: 3px solid var(--ink); box-shadow: 3px 3px 0 var(--ink);
+    cursor: pointer;
+  }
+  .hud button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
+  .hud button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  #musicBtn { font-size: 16px; }
+  #musicBtn[aria-pressed="true"] { background: var(--paper-2); }
+
+  @media (prefers-reduced-motion: reduce) {
+    #title { transition: none; }
+    #speech, #speech.pop { animation: none; transition: none; }
+    #more { animation: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="솔담 빌리지 지도"></canvas>
+
+<div id="title" aria-live="polite">
+  <h1>솔담 빌리지</h1>
+  <p>방향키나 화면을 눌러 마을을 돌아다녀 보세요</p>
+</div>
+
+<div id="speech" hidden role="dialog" aria-live="polite">
+  <canvas id="portrait" width="16" height="16" aria-hidden="true"></canvas>
+  <div class="text">
+    <b id="npcName"></b>
+    <p id="npcText"></p>
+  </div>
+  <span id="more" aria-hidden="true">▼</span>
+  <button id="closeBtn" type="button" aria-label="닫기">×</button>
+</div>
+
+<canvas id="minimap" aria-label="작은 지도 — 빨간 점이 나예요. 누르면 그곳으로 걸어가요"></canvas>
+
+<div class="hud">
+  <button id="zoomOut" type="button" aria-label="멀리 보기">−</button>
+  <button id="zoomIn" type="button" aria-label="가까이 보기">+</button>
+  <button id="musicBtn" type="button" aria-pressed="false" aria-label="배경음악 켜기">♪ 음악</button>
+</div>
+
+<script src="village.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  // ── 설정 ─────────────────────────────────────────────────
+  const TALK_RADIUS = 70;        // NPC와 이 거리(지도 px) 안이면 말풍선
+  const BASE_VIEW_H = 1000;      // 기본 배율: 화면 세로에 이만큼의 지도 px가 보이게
+  const ZOOMS = [0.6, 0.75, 1, 1.25, 1.5, 1.8];  // −/+ 단추로 고르는 배율 단계(1 = 기본)
+  const MUSIC_VOLUME = 0.25;
+  const TYPE_SPEED = 38;         // 타자기 글자/초
+  const FOOT_W = 7, FOOT_H = 6;  // 발 충돌 상자(반폭, 높이)
+
+  const reduceMotionMQ = matchMedia("(prefers-reduced-motion: reduce)");
+  let reduceMotion = reduceMotionMQ.matches;
+  reduceMotionMQ.addEventListener?.("change", e => { reduceMotion = e.matches; });
+
+  // ── DOM ──────────────────────────────────────────────────
+  const canvas = document.getElementById("stage");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const titleEl = document.getElementById("title");
+  const speechEl = document.getElementById("speech");
+  const portraitEl = document.getElementById("portrait");
+  const pctx = portraitEl.getContext("2d");
+  const nameEl = document.getElementById("npcName");
+  const textEl = document.getElementById("npcText");
+  const closeBtn = document.getElementById("closeBtn");
+
+  // ── 이미지 로딩(없으면 자리표시 도형) ────────────────────
+  function loadImage(src) {
+    const rec = { img: new Image(), ok: false, failed: false };
+    rec.img.onload = () => { rec.ok = true; };
+    rec.img.onerror = () => { rec.failed = true; };
+    rec.img.src = src;
+    return rec;
+  }
+  const mapImg = loadImage(MAP.src);
+
+  function hashColor(str, s = 62, l = 58) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+    return `hsl(${h % 360} ${s}% ${l}%)`;
+  }
+
+  // ── 엔티티 ───────────────────────────────────────────────
+  const player = {
+    kind: "player", id: "player", name: "방문자",
+    x: PLAYER.x, y: PLAYER.y, speed: PLAYER.speed || 140,
+    img: loadImage(PLAYER.src),
+    facing: 1, moving: false, walkT: 0,
+    color: "#f2c66d",
+  };
+  const npcs = NPCS.map((n, i) => ({
+    kind: "npc", ...n,
+    img: loadImage(n.sprite),
+    phase: i * 0.9,
+    facing: 1,
+    color: hashColor(n.id),
+  }));
+
+  // 스프라이트 크기(이미지가 없으면 기본 24×32)
+  function spriteSize(e) {
+    if (e.img.ok) return { w: e.img.img.naturalWidth, h: e.img.img.naturalHeight };
+    return { w: 24, h: 32 };
+  }
+
+  // ── 충돌 ─────────────────────────────────────────────────
+  function footBox(x, y) {
+    // 스프라이트가 크면 발 상자도 조금 넓힌다
+    const hw = Math.max(FOOT_W, Math.round(spriteSize(player).w * 0.28));
+    return { x: x - hw, y: y - FOOT_H, w: hw * 2, h: FOOT_H };
+  }
+  // 말 걸 수 있는 거리: 기본 70px, 스프라이트가 크면 둘이 나란히 설 만큼 넓힌다
+  function talkRadius(n) {
+    return Math.max(TALK_RADIUS, Math.round((spriteSize(player).w + spriteSize(n).w) / 2) + 12);
+  }
+  function hitsBlocker(x, y) {
+    const b = footBox(x, y);
+    if (b.x < 0 || b.y < 0 || b.x + b.w > MAP.width || b.y + b.h > MAP.height) return true;
+    for (const r of BLOCKERS) {
+      if (b.x < r.x + r.w && b.x + b.w > r.x && b.y < r.y + r.h && b.y + b.h > r.y) return true;
+    }
+    return false;
+  }
+  // 축별로 따로 밀어서 벽을 따라 미끄러지게
+  function tryMove(dx, dy) {
+    let moved = false;
+    if (dx !== 0 && !hitsBlocker(player.x + dx, player.y)) { player.x += dx; moved = true; }
+    if (dy !== 0 && !hitsBlocker(player.x, player.y + dy)) { player.y += dy; moved = true; }
+    return moved;
+  }
+
+  // ── 입력 ─────────────────────────────────────────────────
+  const keys = new Set();
+  const KEYMAP = {
+    ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+    w: "up", s: "down", a: "left", d: "right",
+    W: "up", S: "down", A: "left", D: "right",
+  };
+  let target = null;     // {x,y} 포인터로 찍은 목적지
+  let hasMoved = false;
+
+  addEventListener("keydown", e => {
+    if (e.key === "Escape") { closeSpeech(true); return; }
+    const dir = KEYMAP[e.key];
+    if (dir) { keys.add(dir); target = null; e.preventDefault(); }
+  });
+  addEventListener("keyup", e => { const dir = KEYMAP[e.key]; if (dir) keys.delete(dir); });
+  addEventListener("blur", () => keys.clear());
+
+  canvas.addEventListener("pointerdown", e => {
+    const p = toMap(e.clientX, e.clientY);
+    // 가까운 NPC를 직접 눌렀으면 말풍선 열기
+    const hit = npcAt(p.x, p.y);
+    if (hit && dist(hit, player) <= talkRadius(hit) + 24) {
+      dismissedId = null;
+      openSpeech(hit);
+      return;
+    }
+    target = p;
+    keys.clear();
+  });
+
+  function toMap(cx, cy) {
+    return { x: cam.x + (cx * dpr) / scale, y: cam.y + (cy * dpr) / scale };
+  }
+  function npcAt(mx, my) {
+    let best = null;
+    for (const n of npcs) {
+      const s = spriteSize(n);
+      if (mx >= n.x - s.w / 2 - 4 && mx <= n.x + s.w / 2 + 4 && my >= n.y - s.h - 6 && my <= n.y + 6) {
+        if (!best || n.y > best.y) best = n;
+      }
+    }
+    return best;
+  }
+  function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+  // ── 카메라 / 배율 ────────────────────────────────────────
+  let dpr = 1, scale = 1, viewW = 0, viewH = 0;
+  let zoomIdx = ZOOMS.indexOf(1);
+  const cam = { x: 0, y: 0 };
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const W = Math.max(1, Math.floor(innerWidth * dpr));
+    const H = Math.max(1, Math.floor(innerHeight * dpr));
+    canvas.width = W; canvas.height = H;
+    canvas.style.width = innerWidth + "px";
+    canvas.style.height = innerHeight + "px";
+    // 세로 기준 배율 × 단추로 고른 단계. 그리기는 늘 최근접(번짐 없음)
+    scale = (H / BASE_VIEW_H) * ZOOMS[zoomIdx];
+    viewW = W / scale; viewH = H / scale;
+  }
+  addEventListener("resize", resize);
+  resize();
+
+  function setZoom(step) {
+    const next = Math.min(ZOOMS.length - 1, Math.max(0, zoomIdx + step));
+    if (next === zoomIdx) return;
+    zoomIdx = next;
+    resize();
+    document.getElementById("zoomOut").disabled = zoomIdx === 0;
+    document.getElementById("zoomIn").disabled = zoomIdx === ZOOMS.length - 1;
+  }
+  document.getElementById("zoomOut").addEventListener("click", () => setZoom(-1));
+  document.getElementById("zoomIn").addEventListener("click", () => setZoom(1));
+  addEventListener("keydown", e => {
+    if (e.key === "-" || e.key === "_") setZoom(-1);
+    if (e.key === "+" || e.key === "=") setZoom(1);
+  });
+  let wheelAcc = 0;
+  canvas.addEventListener("wheel", e => {
+    e.preventDefault();
+    wheelAcc += e.deltaY;
+    if (Math.abs(wheelAcc) > 120) { setZoom(wheelAcc > 0 ? -1 : 1); wheelAcc = 0; }
+  }, { passive: false });
+
+  // ── 작은 지도 ────────────────────────────────────────────
+  const mini = document.getElementById("minimap");
+  const mctx = mini.getContext("2d");
+  const MINI_W = 440;                         // 내부 해상도(화면에는 CSS로 줄여 보임)
+  mini.width = MINI_W;
+  mini.height = Math.round(MINI_W * MAP.height / MAP.width);
+  const miniK = MINI_W / MAP.width;
+  mini.addEventListener("pointerdown", e => {
+    e.stopPropagation();
+    const r = mini.getBoundingClientRect();
+    const mx = (e.clientX - r.left) / r.width * MAP.width;
+    const my = (e.clientY - r.top) / r.height * MAP.height;
+    target = { x: mx, y: my };
+    keys.clear();
+    startMusicOnce();
+  });
+  function drawMinimap(t) {
+    mctx.imageSmoothingEnabled = true;
+    if (mapImg.ok) mctx.drawImage(mapImg.img, 0, 0, mini.width, mini.height);
+    else { mctx.fillStyle = "#79b457"; mctx.fillRect(0, 0, mini.width, mini.height); }
+    // 지금 보고 있는 화면
+    mctx.strokeStyle = "rgba(255,248,231,.95)";
+    mctx.lineWidth = 3;
+    mctx.strokeRect(Math.max(0, cam.x) * miniK, Math.max(0, cam.y) * miniK,
+      Math.min(viewW, MAP.width) * miniK, Math.min(viewH, MAP.height) * miniK);
+    // 주민(작은 크림색 점)
+    for (const n of npcs) {
+      mctx.fillStyle = "#3b2a20"; mctx.fillRect(n.x * miniK - 4, n.y * miniK - 4, 8, 8);
+      mctx.fillStyle = "#fff8e7"; mctx.fillRect(n.x * miniK - 2, n.y * miniK - 2, 4, 4);
+    }
+    // 나(빨간 점, 살짝 깜박)
+    const pulse = reduceMotion ? 0 : Math.round((Math.sin(t * 6) + 1) * 1.5);
+    const px = player.x * miniK, py = player.y * miniK, rr = 7 + pulse;
+    mctx.fillStyle = "#fff8e7"; mctx.beginPath(); mctx.arc(px, py, rr + 3, 0, Math.PI * 2); mctx.fill();
+    mctx.fillStyle = "#e23b2e"; mctx.beginPath(); mctx.arc(px, py, rr, 0, Math.PI * 2); mctx.fill();
+  }
+
+  // ── 배경음악 ─────────────────────────────────────────────
+  const musicBtn = document.getElementById("musicBtn");
+  const music = new Audio("music.mp3");
+  music.loop = true;
+  music.volume = MUSIC_VOLUME;
+  let musicMuted = false, musicTried = false;
+  function renderMusic() {
+    const on = !music.paused;
+    musicBtn.setAttribute("aria-pressed", String(on));
+    musicBtn.textContent = on ? "♪ 음악 끄기" : "♪ 음악";
+    musicBtn.setAttribute("aria-label", on ? "배경음악 끄기" : "배경음악 켜기");
+  }
+  function playMusic() { music.play().then(renderMusic).catch(renderMusic); }
+  // 브라우저는 첫 손길 뒤에만 소리를 허락한다 — 처음 움직일 때 조용히 켠다
+  function startMusicOnce() {
+    if (musicTried || musicMuted) return;
+    musicTried = true;
+    playMusic();
+  }
+  musicBtn.addEventListener("click", () => {
+    musicTried = true;
+    if (music.paused) { musicMuted = false; playMusic(); }
+    else { musicMuted = true; music.pause(); renderMusic(); }
+  });
+  music.addEventListener("pause", renderMusic);
+  music.addEventListener("play", renderMusic);
+  addEventListener("keydown", e => { if (KEYMAP[e.key]) startMusicOnce(); });
+  canvas.addEventListener("pointerdown", startMusicOnce);
+
+  function updateCamera() {
+    const cx = player.x - viewW / 2;
+    const cy = player.y - viewH / 2 + 24;
+    cam.x = viewW >= MAP.width ? -(viewW - MAP.width) / 2 : Math.min(Math.max(cx, 0), MAP.width - viewW);
+    cam.y = viewH >= MAP.height ? -(viewH - MAP.height) / 2 : Math.min(Math.max(cy, 0), MAP.height - viewH);
+    cam.x = Math.round(cam.x); cam.y = Math.round(cam.y);
+  }
+
+  // ── 말풍선 ───────────────────────────────────────────────
+  let activeNpc = null;    // 현재 말풍선 주인
+  let dismissedId = null;  // 닫기/Esc 로 닫은 NPC(멀어질 때까지 다시 안 뜸)
+  let lineIdx = 0;
+  let shown = 0;           // 타자기로 보여 준 글자 수
+  let fullText = "";
+
+  function openSpeech(npc) {
+    if (activeNpc === npc && !speechEl.hidden) return;
+    activeNpc = npc;
+    lineIdx = 0;
+    setLine();
+    nameEl.textContent = npc.name;
+    drawPortrait(npc);
+    speechEl.hidden = false;
+    speechEl.classList.remove("pop");
+    void speechEl.offsetWidth;
+    speechEl.classList.add("pop");
+  }
+  function setLine() {
+    fullText = (activeNpc.lines && activeNpc.lines[lineIdx]) || "…";
+    shown = reduceMotion ? fullText.length : 0;
+    textEl.textContent = reduceMotion ? fullText : "";
+    speechEl.classList.toggle("has-more", lineIdx < (activeNpc.lines?.length || 1) - 1);
+  }
+  function closeSpeech(byUser) {
+    if (speechEl.hidden) return;
+    if (byUser && activeNpc) dismissedId = activeNpc.id;
+    speechEl.hidden = true;
+    activeNpc = null;
+  }
+  closeBtn.addEventListener("click", e => { e.stopPropagation(); closeSpeech(true); });
+  speechEl.addEventListener("pointerdown", e => e.stopPropagation());
+  speechEl.addEventListener("click", () => {
+    if (!activeNpc) return;
+    if (shown < fullText.length) { shown = fullText.length; textEl.textContent = fullText; return; }
+    if (lineIdx < (activeNpc.lines?.length || 1) - 1) { lineIdx++; setLine(); }
+  });
+
+  function drawPortrait(npc) {
+    const s = spriteSize(npc);
+    const size = Math.max(s.w, s.h);
+    portraitEl.width = size; portraitEl.height = size;
+    pctx.imageSmoothingEnabled = false;
+    pctx.clearRect(0, 0, size, size);
+    const ox = Math.floor((size - s.w) / 2), oy = size - s.h;
+    if (npc.img.ok) pctx.drawImage(npc.img.img, ox, oy);
+    else drawPlaceholderBody(pctx, npc, ox, oy, s.w, s.h);
+  }
+
+  // ── 그리기 ───────────────────────────────────────────────
+  function drawPlaceholderBody(c, e, x, y, w, h) {
+    // 머리 + 몸통 + 외곽선. 발 위치가 (x + w/2, y + h).
+    c.fillStyle = "#3b2a20";
+    c.fillRect(x, y, w, h);
+    c.fillStyle = e.kind === "player" ? "#f2c66d" : e.color;
+    c.fillRect(x + 1, y + 1, w - 2, h - 2);
+    const hw = Math.floor(w * 0.6), hh = Math.floor(h * 0.42);
+    c.fillStyle = "#3b2a20";
+    c.fillRect(x + Math.floor((w - hw) / 2) - 1, y - 2, hw + 2, hh + 2);
+    c.fillStyle = "#ffe0bd";
+    c.fillRect(x + Math.floor((w - hw) / 2), y - 1, hw, hh);
+    c.fillStyle = "#3b2a20";
+    const ex = x + Math.floor(w / 2);
+    c.fillRect(ex - 3, y + 3, 2, 2);
+    c.fillRect(ex + 1, y + 3, 2, 2);
+  }
+
+  function drawEntity(e, t) {
+    const s = spriteSize(e);
+    let bob = 0;
+    if (!reduceMotion) {
+      const k = Math.max(1, Math.round(s.h / 48));
+      if (e.kind === "player") bob = e.moving ? -Math.round(Math.abs(Math.sin(e.walkT * 14)) * 2 * k) : 0;
+      else bob = Math.round(Math.sin(t * 1.6 + e.phase) * 0.9 * k);
+    }
+    const x = Math.round(e.x - s.w / 2);
+    const y = Math.round(e.y - s.h + bob);
+
+    // 그림자
+    ctx.fillStyle = "rgba(0,0,0,.22)";
+    const sh = Math.max(3, Math.round(s.h / 28));
+    ctx.fillRect(Math.round(e.x - s.w * 0.35), Math.round(e.y - sh + 1), Math.round(s.w * 0.7), sh);
+
+    ctx.save();
+    if (e.facing < 0) { ctx.translate(x + s.w, y); ctx.scale(-1, 1); }
+    else ctx.translate(x, y);
+    if (e.img.ok) ctx.drawImage(e.img.img, 0, 0);
+    else drawPlaceholderBody(ctx, e, 0, 0, s.w, s.h);
+    ctx.restore();
+  }
+
+  function drawBang(n, t) {
+    // NPC 머리 위 "!" 말풍선 (텍스트 대신 네모로 그려 글꼴 로딩과 무관)
+    const s = spriteSize(n);
+    const k = Math.max(1, Math.round(s.h / 48));                      // 스프라이트 크기에 맞춘 배수
+    const bob = reduceMotion ? 0 : Math.round(Math.sin(t * 5) * 1.5) * k;
+    const bx = Math.round(n.x - 6 * k), by = Math.round(n.y - s.h - 20 * k + bob);
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.scale(k, k);
+    ctx.fillStyle = "#3b2a20"; ctx.fillRect(0, 0, 12, 14);
+    ctx.fillStyle = "#fff8e7"; ctx.fillRect(1, 1, 10, 12);
+    ctx.fillStyle = "#3b2a20"; ctx.fillRect(5, 13, 2, 2);             // 꼬리
+    ctx.fillStyle = "#e7784c";
+    ctx.fillRect(5, 3, 2, 6);
+    ctx.fillRect(5, 10, 2, 2);
+    ctx.restore();
+  }
+
+  function drawMap() {
+    if (mapImg.ok) { ctx.drawImage(mapImg.img, 0, 0); return; }
+    // 지도 이미지가 없을 때: 풀밭 + 격자 + 막힌 구역 색상
+    ctx.fillStyle = "#79b457";
+    ctx.fillRect(0, 0, MAP.width, MAP.height);
+    ctx.fillStyle = "#6ea84e";
+    const step = 64;
+    const x0 = Math.floor(cam.x / step) * step, y0 = Math.floor(cam.y / step) * step;
+    for (let y = y0; y < cam.y + viewH; y += step) {
+      for (let x = x0; x < cam.x + viewW; x += step) {
+        if (((x / step + y / step) & 1) === 0) ctx.fillRect(x, y, step, step);
+      }
+    }
+    for (const r of BLOCKERS) {
+      ctx.fillStyle = "#3b2a20"; ctx.fillRect(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
+      ctx.fillStyle = r.color || "#b08968"; ctx.fillRect(r.x, r.y, r.w, r.h);
+    }
+    ctx.fillStyle = "#3b2a20";
+    ctx.fillRect(0, 0, MAP.width, 2); ctx.fillRect(0, MAP.height - 2, MAP.width, 2);
+    ctx.fillRect(0, 0, 2, MAP.height); ctx.fillRect(MAP.width - 2, 0, 2, MAP.height);
+  }
+
+  function drawTargetMark(t) {
+    if (!target) return;
+    const r = 4 + (reduceMotion ? 0 : Math.round(Math.abs(Math.sin(t * 6)) * 2));
+    const x = Math.round(target.x), y = Math.round(target.y);
+    ctx.fillStyle = "rgba(255,248,231,.9)";
+    ctx.fillRect(x - r, y - 1, r * 2 + 1, 2);
+    ctx.fillRect(x - 1, y - r, 2, r * 2 + 1);
+  }
+
+  // ── 메인 루프 ────────────────────────────────────────────
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const t = now / 1000;
+
+    // 이동
+    let dx = 0, dy = 0;
+    if (keys.size) {
+      if (keys.has("left")) dx -= 1;
+      if (keys.has("right")) dx += 1;
+      if (keys.has("up")) dy -= 1;
+      if (keys.has("down")) dy += 1;
+      const len = Math.hypot(dx, dy) || 1;
+      dx = dx / len * player.speed * dt;
+      dy = dy / len * player.speed * dt;
+    } else if (target) {
+      const ddx = target.x - player.x, ddy = target.y - player.y;
+      const d = Math.hypot(ddx, ddy);
+      const step = player.speed * dt;
+      if (d <= Math.max(step, 2)) { target = null; }
+      else { dx = ddx / d * step; dy = ddy / d * step; }
+    }
+    player.moving = false;
+    if (dx !== 0 || dy !== 0) {
+      if (dx !== 0) player.facing = dx < 0 ? -1 : 1;
+      const before = { x: player.x, y: player.y };
+      const moved = tryMove(dx, dy);
+      if (moved && (player.x !== before.x || player.y !== before.y)) {
+        player.moving = true;
+        player.walkT += dt;
+        if (!hasMoved) { hasMoved = true; hideTitle(); }
+      } else if (target) {
+        target = null; // 막혔으면 멈춤
+      }
+    }
+
+    // 근처 NPC
+    let near = null, nd = Infinity;
+    for (const n of npcs) {
+      const d = dist(n, player);
+      if (d < nd) { nd = d; near = n; }
+    }
+    const inRange = near && nd <= talkRadius(near) ? near : null;
+    if (dismissedId && (!inRange || inRange.id !== dismissedId)) dismissedId = null;
+    if (inRange) {
+      if (!dismissedId && (activeNpc !== inRange || speechEl.hidden)) openSpeech(inRange);
+      inRange.facing = player.x < inRange.x ? -1 : 1;
+    } else if (activeNpc) {
+      closeSpeech(false);
+    }
+
+    // 타자기
+    if (activeNpc && shown < fullText.length) {
+      shown = Math.min(fullText.length, shown + TYPE_SPEED * dt);
+      textEl.textContent = fullText.slice(0, Math.floor(shown));
+    }
+
+    // 그리기
+    updateCamera();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = "#3b2a20";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(scale, 0, 0, scale, -cam.x * scale, -cam.y * scale);
+    ctx.imageSmoothingEnabled = false;
+
+    drawMap();
+    drawTargetMark(t);
+
+    const ents = [player, ...npcs].sort((a, b) => a.y - b.y);
+    for (const e of ents) drawEntity(e, t);
+    if (inRange) drawBang(inRange, t);
+
+    drawMinimap(t);
+    requestAnimationFrame(frame);
+  }
+
+  function hideTitle() {
+    if (reduceMotion) { titleEl.classList.add("gone"); return; }
+    titleEl.classList.add("fade");
+    setTimeout(() => titleEl.classList.add("gone"), 900);
+  }
+
+  // 데이터 점검(콘솔에만 알림)
+  if (!Array.isArray(NPCS) || !MAP || !PLAYER) console.warn("village.js 데이터가 비었습니다.");
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
