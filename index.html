@@ -195,8 +195,28 @@
   #enter:hover span, #enter:focus-visible span { background: var(--paper-2); }
   #enter:focus-visible { outline: none; }
   #title { z-index: 11; }
+  #minimap[hidden] { display: none; }
+
+  /* ── 장면 전환(문 드나들기) ── */
+  #fade {
+    position: fixed; inset: 0; z-index: 9;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--ink);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s steps(4);
+  }
+  #fade.on { opacity: 1; pointer-events: auto; }
+  #fade span {
+    padding: 8px 18px;
+    font-size: clamp(20px, 5vw, 30px); font-weight: 700;
+    color: var(--ink); background: var(--paper);
+    border: 3px solid var(--paper); box-shadow: 4px 4px 0 var(--accent);
+  }
+  #fade span:empty { display: none; }
 
   @media (prefers-reduced-motion: reduce) {
+    #fade { transition: none; }
     #title { transition: none; }
     #speech, #speech.pop { animation: none; transition: none; }
     #more { animation: none; }
@@ -228,6 +248,8 @@
   <button id="zoomIn" type="button" aria-label="가까이 보기">+</button>
   <button id="musicBtn" type="button" aria-pressed="true" aria-label="배경음악 끄기">♪ 음악 끄기</button>
 </div>
+
+<div id="fade" aria-live="polite"><span id="fadeLabel"></span></div>
 
 <button id="enter" type="button" hidden><span>▶ 마을에 들어가기</span><small>♪ 음악이 함께 나와요</small></button>
 
@@ -281,8 +303,21 @@
     x: PLAYER.x, y: PLAYER.y, speed: PLAYER.speed || 140,
     img: loadImage(PLAYER.src),
     facing: 1, moving: false, walkT: 0,
+    dir: "down",           // 걷기 그림 방향: down(정면) · up(뒷모습) · side(옆, 왼쪽은 뒤집음)
     color: "#f2c66d",
   };
+  // 걷기 그림(있으면): 방향마다 [서 있기, 걸음 A, 걸음 B]. 하나라도 못 불러오면 한 장짜리로 돌아간다.
+  const playerFrames = PLAYER.frames
+    ? Object.fromEntries(Object.entries(PLAYER.frames).map(([d, list]) => [d, list.map(loadImage)]))
+    : null;
+  const WALK_SEQ = [1, 0, 2, 0];   // 걸음 A → 서기 → 걸음 B → 서기
+  function playerImg() {
+    if (!playerFrames) return player.img;
+    const list = playerFrames[player.dir] || playerFrames.down;
+    const i = player.moving && !reduceMotion ? WALK_SEQ[Math.floor(player.walkT * 8) % 4] : 0;
+    const rec = list[i];
+    return rec && rec.ok ? rec : (list[0]?.ok ? list[0] : player.img);
+  }
   const npcs = NPCS.map((n, i) => ({
     kind: "npc", ...n,
     img: loadImage(n.sprite),
@@ -291,9 +326,32 @@
     color: hashColor(n.id),
   }));
 
+  // ── 장면: 바깥 마을 + 실내(village.js 의 ROOMS) ───────────
+  const outside = {
+    id: "outside", name: "솔담 빌리지", img: mapImg,
+    width: MAP.width, height: MAP.height,
+    blockers: BLOCKERS, npcs, doors: typeof DOORS !== "undefined" ? DOORS : [],
+  };
+  const rooms = {};
+  if (typeof ROOMS !== "undefined") {
+    for (const [id, r] of Object.entries(ROOMS)) {
+      rooms[id] = {
+        id, name: r.name, img: loadImage(r.src),
+        width: r.width, height: r.height, bg: r.bg,
+        blockers: r.blockers || [], doors: [],
+        spawn: r.spawn, exit: r.exit,
+        // 말 거는 물건: 스프라이트 없이 실내 그림 일부를 초상으로 쓴다
+        npcs: (r.things || []).map(th => ({ kind: "thing", facing: 1, ...th, id: id + ":" + th.id })),
+      };
+    }
+  }
+  let scene = outside;
+
   // 스프라이트 크기(이미지가 없으면 기본 24×32)
   function spriteSize(e) {
-    if (e.img.ok) return { w: e.img.img.naturalWidth, h: e.img.img.naturalHeight };
+    if (e.kind === "thing") return { w: e.w, h: e.h };
+    const rec = e === player ? playerImg() : e.img;
+    if (rec.ok) return { w: rec.img.naturalWidth, h: rec.img.naturalHeight };
     return { w: 24, h: 32 };
   }
 
@@ -309,8 +367,8 @@
   }
   function hitsBlocker(x, y) {
     const b = footBox(x, y);
-    if (b.x < 0 || b.y < 0 || b.x + b.w > MAP.width || b.y + b.h > MAP.height) return true;
-    for (const r of BLOCKERS) {
+    if (b.x < 0 || b.y < 0 || b.x + b.w > scene.width || b.y + b.h > scene.height) return true;
+    for (const r of scene.blockers) {
       if (b.x < r.x + r.w && b.x + b.w > r.x && b.y < r.y + r.h && b.y + b.h > r.y) return true;
     }
     return false;
@@ -323,6 +381,79 @@
     return moved;
   }
 
+  // ── 길 찾기(눌러서 걷기) ─────────────────────────────────
+  // 곧장 갈 수 있으면 곧장, 가구·건물에 막히면 격자 A*로 돌아서 간다.
+  // 누른 곳이 막힌 자리(건물 안 등)면 예전처럼 곧장 걷다가 막히는 데서 멈춘다.
+  const GRID = 16;
+  let route = [];        // target 다음에 들를 점들
+  function lineClear(ax, ay, bx, by) {
+    const n = Math.ceil(Math.hypot(bx - ax, by - ay) / 6);
+    for (let i = 1; i <= n; i++) {
+      if (hitsBlocker(ax + (bx - ax) * i / n, ay + (by - ay) * i / n)) return false;
+    }
+    return true;
+  }
+  function findPath(sx, sy, gx, gy, tol) {
+    const cols = Math.ceil(scene.width / GRID), rows = Math.ceil(scene.height / GRID);
+    const cxy = i => [(i % cols) * GRID + GRID / 2, Math.floor(i / cols) * GRID + GRID / 2];
+    const known = new Uint8Array(cols * rows);        // 0 모름 · 1 걸을 수 있음 · 2 막힘
+    const ok = i => { if (!known[i]) { const [x, y] = cxy(i); known[i] = hitsBlocker(x, y) ? 2 : 1; } return known[i] === 1; };
+    const reach = Math.max(tol, GRID * 0.75);
+    const h = i => { const [x, y] = cxy(i); return Math.max(0, Math.hypot(x - gx, y - gy) - reach); };
+    const start = Math.min(rows - 1, Math.max(0, Math.floor(sy / GRID))) * cols + Math.min(cols - 1, Math.max(0, Math.floor(sx / GRID)));
+    const g = new Float32Array(cols * rows).fill(Infinity), from = new Int32Array(cols * rows).fill(-1);
+    const open = [start]; g[start] = 0;
+    const f = new Float32Array(cols * rows).fill(Infinity); f[start] = h(start);
+    const closed = new Uint8Array(cols * rows);
+    let found = -1, steps = 0;
+    while (open.length && steps++ < 30000) {
+      let bi = 0;
+      for (let k = 1; k < open.length; k++) if (f[open[k]] < f[open[bi]]) bi = k;
+      const cur = open[bi]; open[bi] = open[open.length - 1]; open.pop();
+      if (closed[cur]) continue;
+      closed[cur] = 1;
+      if (cur !== start && h(cur) === 0) { found = cur; break; }
+      const c = cur % cols, r = Math.floor(cur / cols);
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        if (!dr && !dc) continue;
+        const nc = c + dc, nr = r + dr;
+        if (nc < 0 || nr < 0 || nc >= cols || nr >= rows) continue;
+        const ni = nr * cols + nc;
+        if (closed[ni] || !ok(ni)) continue;
+        if (dr && dc && (!ok(r * cols + nc) || !ok(nr * cols + c))) continue;   // 모서리 깎기 금지
+        const ng = g[cur] + (dr && dc ? 1.414 : 1);
+        if (ng < g[ni]) { g[ni] = ng; f[ni] = ng + h(ni) / GRID; from[ni] = cur; open.push(ni); }
+      }
+    }
+    if (found < 0) return null;
+    const pts = [];
+    for (let i = found; i !== -1 && i !== start; i = from[i]) pts.unshift(cxy(i));
+    // 실들이기: 지금 자리에서 곧장 보이는 가장 먼 점으로 건너뛴다
+    const outPts = [];
+    let ax = sx, ay = sy, i = 0;
+    while (i < pts.length) {
+      let j = pts.length - 1;
+      while (j > i && !lineClear(ax, ay, pts[j][0], pts[j][1])) j--;
+      outPts.push({ x: pts[j][0], y: pts[j][1] });
+      [ax, ay] = pts[j]; i = j + 1;
+    }
+    return outPts;
+  }
+  // tol > 0 이면 목표점 둘레 tol 안 어디든 닿으면 된다(물건 앞에 서기)
+  function goTo(x, y, tol = 0) {
+    route = [];
+    const goalBlocked = hitsBlocker(x, y);
+    // 막힌 자리를 눌렀으면(건물 안 등) 길 찾기 없이 예전처럼 곧장 걷다가 멈춘다
+    if (!goalBlocked && lineClear(player.x, player.y, x, y) || goalBlocked && tol === 0) { target = { x, y }; return; }
+    const path = findPath(player.x, player.y, x, y, tol);
+    if (path && path.length) {
+      if (tol === 0 && !hitsBlocker(x, y)) path.push({ x, y });
+      route = path; target = route.shift();
+    } else {
+      target = { x, y };
+    }
+  }
+
   // ── 입력 ─────────────────────────────────────────────────
   const keys = new Set();
   const KEYMAP = {
@@ -331,17 +462,24 @@
     W: "up", S: "down", A: "left", D: "right",
   };
   let target = null;     // {x,y} 포인터로 찍은 목적지
+  let pendingDoor = null; // 문을 눌러 그 앞으로 걸어가는 중이면 그 문(도착하면 들어감)
   let hasMoved = false;
 
   addEventListener("keydown", e => {
     if (e.key === "Escape") { closeSpeech(true); return; }
+    // Enter·Space: 문 앞이면 들어가기, 실내 문 깔개 가까이면 나가기(단추에 초점이 있으면 단추에 맡김)
+    if ((e.key === "Enter" || e.key === " ") && !e.target?.closest?.("button")) {
+      if (doorHere()) { enterDoor(doorHere()); e.preventDefault(); return; }
+      if (scene.exit && nearExit()) { leaveRoom(); e.preventDefault(); return; }
+    }
     const dir = KEYMAP[e.key];
-    if (dir) { keys.add(dir); target = null; e.preventDefault(); }
+    if (dir) { keys.add(dir); target = null; route = []; pendingDoor = null; e.preventDefault(); }
   });
   addEventListener("keyup", e => { const dir = KEYMAP[e.key]; if (dir) keys.delete(dir); });
   addEventListener("blur", () => keys.clear());
 
   canvas.addEventListener("pointerdown", e => {
+    if (busy) return;
     const p = toMap(e.clientX, e.clientY);
     // 가까운 NPC를 직접 눌렀으면 말풍선 열기
     const hit = npcAt(p.x, p.y);
@@ -350,8 +488,24 @@
       openSpeech(hit);
       return;
     }
-    target = p;
     keys.clear();
+    pendingDoor = null;
+    // 문(또는 그 위 「들어가기」 표시)을 눌렀으면: 문 앞이면 바로, 멀면 문 앞까지 걸어가서 들어간다
+    const door = doorAtPoint(p.x, p.y);
+    if (door) {
+      if (doorHere() === door) { enterDoor(door); return; }
+      pendingDoor = door;
+      goTo(door.zone.x + door.zone.w / 2, door.zone.y + door.zone.h / 2);
+      return;
+    }
+    // 실내 문 깔개나 「나가기」 팻말을 눌렀으면 깔개로 걸어가(밟으면) 나간다
+    if (scene.exit && (inRect(p.x, p.y, scene.exit) || inRect(p.x, p.y, signRects.get("exit")))) {
+      if (nearExit()) { leaveRoom(); return; }
+      const c = exitCenter(); goTo(c.x, c.y); return;
+    }
+    // 실내 물건을 멀리서 눌렀으면 말 걸 수 있는 자리까지 걸어간다
+    if (hit && hit.kind === "thing") { goTo(hit.x, hit.y, talkRadius(hit) - 10); return; }
+    goTo(p.x, p.y);
   });
 
   function toMap(cx, cy) {
@@ -359,7 +513,7 @@
   }
   function npcAt(mx, my) {
     let best = null;
-    for (const n of npcs) {
+    for (const n of scene.npcs) {
       const s = spriteSize(n);
       if (mx >= n.x - s.w / 2 - 4 && mx <= n.x + s.w / 2 + 4 && my >= n.y - s.h - 6 && my <= n.y + 6) {
         if (!best || n.y > best.y) best = n;
@@ -421,8 +575,9 @@
     const r = mini.getBoundingClientRect();
     const mx = (e.clientX - r.left) / r.width * MAP.width;
     const my = (e.clientY - r.top) / r.height * MAP.height;
-    target = { x: mx, y: my };
     keys.clear();
+    pendingDoor = null;
+    goTo(mx, my);
     startMusicOnce();
   });
   function drawMinimap(t) {
@@ -489,8 +644,9 @@
   function updateCamera() {
     const cx = player.x - viewW / 2;
     const cy = player.y - viewH / 2 + 24;
-    cam.x = viewW >= MAP.width ? -(viewW - MAP.width) / 2 : Math.min(Math.max(cx, 0), MAP.width - viewW);
-    cam.y = viewH >= MAP.height ? -(viewH - MAP.height) / 2 : Math.min(Math.max(cy, 0), MAP.height - viewH);
+    const W = scene.width, H = scene.height;
+    cam.x = viewW >= W ? -(viewW - W) / 2 : Math.min(Math.max(cx, 0), W - viewW);
+    cam.y = viewH >= H ? -(viewH - H) / 2 : Math.min(Math.max(cy, 0), H - viewH);
     cam.x = Math.round(cam.x); cam.y = Math.round(cam.y);
   }
 
@@ -534,6 +690,17 @@
   });
 
   function drawPortrait(npc) {
+    if (npc.kind === "thing") {
+      // 물건은 실내 그림에서 그 자리를 잘라 초상으로
+      const c = npc.crop || { x: npc.x - npc.w / 2, y: npc.y - npc.h, w: npc.w, h: npc.h };
+      const size = Math.max(c.w, c.h);
+      portraitEl.width = size; portraitEl.height = size;
+      pctx.imageSmoothingEnabled = false;
+      pctx.fillStyle = "#ffe9b8"; pctx.fillRect(0, 0, size, size);
+      if (scene.img.ok) pctx.drawImage(scene.img.img, c.x, c.y, c.w, c.h,
+        Math.floor((size - c.w) / 2), Math.floor((size - c.h) / 2), c.w, c.h);
+      return;
+    }
     const s = spriteSize(npc);
     const size = Math.max(s.w, s.h);
     portraitEl.width = size; portraitEl.height = size;
@@ -564,12 +731,16 @@
 
   function drawEntity(e, t) {
     const s = spriteSize(e);
+    const rec = e === player ? playerImg() : e.img;
+    const framed = e === player && playerFrames && rec !== player.img;   // 걷기 그림으로 그리는 중
     let bob = 0;
     if (!reduceMotion) {
       const k = Math.max(1, Math.round(s.h / 48));
-      if (e.kind === "player") bob = e.moving ? -Math.round(Math.abs(Math.sin(e.walkT * 14)) * 2 * k) : 0;
+      if (e.kind === "player") bob = e.moving && !framed ? -Math.round(Math.abs(Math.sin(e.walkT * 14)) * 2 * k) : 0;
       else bob = Math.round(Math.sin(t * 1.6 + e.phase) * 0.9 * k);
     }
+    // 걷기 그림은 옆모습일 때만 좌우를 뒤집는다(앞·뒷모습을 뒤집으면 가르마가 바뀜)
+    const flip = e.facing < 0 && (!framed || e.dir === "side");
     const x = Math.round(e.x - s.w / 2);
     const y = Math.round(e.y - s.h + bob);
 
@@ -579,17 +750,39 @@
     ctx.fillRect(Math.round(e.x - s.w * 0.35), Math.round(e.y - sh + 1), Math.round(s.w * 0.7), sh);
 
     ctx.save();
-    if (e.facing < 0) { ctx.translate(x + s.w, y); ctx.scale(-1, 1); }
+    if (flip) { ctx.translate(x + s.w, y); ctx.scale(-1, 1); }
     else ctx.translate(x, y);
-    if (e.img.ok) ctx.drawImage(e.img.img, 0, 0);
+    if (rec.ok) ctx.drawImage(rec.img, 0, 0);
     else drawPlaceholderBody(ctx, e, 0, 0, s.w, s.h);
     ctx.restore();
+  }
+
+  // 문·문 깔개 위에 뜨는 작은 팻말(「▲ 들어가기」·「▼ 나가기」). 지도 px 기준.
+  const SIGN_FONT = 22;
+  function signRect(text, cx, bottomY) {
+    ctx.font = `700 ${SIGN_FONT}px Galmuri11, Galmuri9, "Malgun Gothic", sans-serif`;
+    const w = Math.ceil(ctx.measureText(text).width) + 20, h = SIGN_FONT + 14;
+    return { x: Math.round(cx - w / 2), y: Math.round(bottomY - h), w, h };
+  }
+  function drawSign(text, cx, bottomY, t, strong) {
+    const r = signRect(text, cx, bottomY);
+    const bob = reduceMotion ? 0 : Math.round(Math.sin(t * 4) * 3);
+    ctx.save();
+    ctx.translate(0, bob);
+    ctx.globalAlpha = strong ? 1 : 0.82;
+    ctx.fillStyle = "#3b2a20"; ctx.fillRect(r.x - 3, r.y - 3, r.w + 6, r.h + 6);
+    ctx.fillStyle = strong ? "#fff8e7" : "#ffe9b8"; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = strong ? "#e7784c" : "#3b2a20";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(text, r.x + r.w / 2, r.y + r.h / 2 + 1);
+    ctx.restore();
+    return r;
   }
 
   function drawBang(n, t) {
     // NPC 머리 위 "!" 말풍선 (텍스트 대신 네모로 그려 글꼴 로딩과 무관)
     const s = spriteSize(n);
-    const k = Math.max(1, Math.round(s.h / 48));                      // 스프라이트 크기에 맞춘 배수
+    const k = n.kind === "thing" ? 2 : Math.max(1, Math.round(s.h / 48));   // 스프라이트 크기에 맞춘 배수(물건은 고정)
     const bob = reduceMotion ? 0 : Math.round(Math.sin(t * 5) * 1.5) * k;
     const bx = Math.round(n.x - 6 * k), by = Math.round(n.y - s.h - 20 * k + bob);
     ctx.save();
@@ -605,9 +798,10 @@
   }
 
   function drawMap() {
-    if (mapImg.ok) { ctx.drawImage(mapImg.img, 0, 0); return; }
+    if (scene.img.ok) { ctx.drawImage(scene.img.img, 0, 0); return; }
+    const MAP = scene, BLOCKERS = scene.blockers;   // 아래 자리표시 그림은 지금 장면 기준
     // 지도 이미지가 없을 때: 풀밭 + 격자 + 막힌 구역 색상
-    ctx.fillStyle = "#79b457";
+    ctx.fillStyle = scene === outside ? "#79b457" : "#c89a6a";
     ctx.fillRect(0, 0, MAP.width, MAP.height);
     ctx.fillStyle = "#6ea84e";
     const step = 64;
@@ -628,23 +822,123 @@
 
   function drawTargetMark(t) {
     if (!target) return;
+    const goal = route.length ? route[route.length - 1] : target;   // 돌아가는 길이면 최종 목적지에 표시
     const r = 4 + (reduceMotion ? 0 : Math.round(Math.abs(Math.sin(t * 6)) * 2));
-    const x = Math.round(target.x), y = Math.round(target.y);
+    const x = Math.round(goal.x), y = Math.round(goal.y);
     ctx.fillStyle = "rgba(255,248,231,.9)";
     ctx.fillRect(x - r, y - 1, r * 2 + 1, 2);
     ctx.fillRect(x - 1, y - r, 2, r * 2 + 1);
   }
 
+  // ── 문 드나들기 ──────────────────────────────────────────
+  // 바깥: 문 앞 발판(zone)에 서서 ↑ 를 누르거나(걸어 들어가기) Enter·Space, 또는 문·팻말을 누르면 들어간다.
+  // 실내: 아래 문 깔개(exit)를 밟거나 누르면 원래 문 앞(out)으로 나온다.
+  let busy = false;          // 전환 중(입력·이동 멈춤)
+  let exitArmed = false;     // 실내에서 문 깔개를 한 번 벗어나야 나가기가 켜진다(들어오자마자 튕겨 나가지 않게)
+  const fadeEl = document.getElementById("fade");
+  const fadeLabel = document.getElementById("fadeLabel");
+  const signRects = new Map(); // 이번 프레임에 그린 팻말 자리(누르기 판정용)
+  function inRect(x, y, r) { return !!r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
+  function doorHere() {
+    if (scene !== outside || busy) return null;
+    for (const d of outside.doors) if (inRect(player.x, player.y, d.zone)) return d;
+    return null;
+  }
+  function doorAtPoint(x, y) {
+    if (scene !== outside) return null;
+    for (const d of outside.doors) {
+      const pad = 12;
+      if (inRect(x, y, { x: d.door.x - pad, y: d.door.y - pad, w: d.door.w + pad * 2, h: d.door.h + pad * 2 })) return d;
+      if (inRect(x, y, signRects.get(d))) return d;
+    }
+    return null;
+  }
+  function exitCenter() { const r = scene.exit; return { x: r.x + r.w / 2, y: r.y + r.h / 2 }; }
+  function nearExit() {
+    if (!scene.exit) return false;
+    const r = scene.exit, m = 70;
+    return inRect(player.x, player.y, { x: r.x - m, y: r.y - m, w: r.w + m * 2, h: r.h + m * 2 });
+  }
+  function transition(label, swap) {
+    busy = true;
+    keys.clear(); target = null; route = []; pendingDoor = null;
+    closeSpeech(false); dismissedId = null;
+    player.moving = false;
+    if (!hasMoved) { hasMoved = true; hideTitle(); }
+    if (reduceMotion) { swap(); busy = false; return; }
+    fadeLabel.textContent = label;
+    fadeEl.classList.add("on");
+    setTimeout(() => {
+      swap();
+      setTimeout(() => { fadeEl.classList.remove("on"); busy = false; }, label ? 450 : 150);
+    }, 220);
+  }
+  function enterDoor(d) {
+    const room = rooms[d.room];
+    if (!room || busy) return;
+    transition(room.name, () => {
+      scene = room;
+      room.fromDoor = d;
+      player.x = room.spawn.x; player.y = room.spawn.y;
+      player.dir = "up";
+      exitArmed = !inRect(player.x, player.y, room.exit);
+      mini.hidden = true;
+    });
+  }
+  function leaveRoom() {
+    if (scene === outside || busy) return;
+    const d = scene.fromDoor || outside.doors.find(x => x.room === scene.id);
+    transition("", () => {
+      scene = outside;
+      player.x = d.out.x; player.y = d.out.y;
+      player.dir = "down";
+      mini.hidden = false;
+    });
+  }
+  function drawDoorSigns(t) {
+    signRects.clear();
+    if (scene === outside) {
+      const here = doorHere();
+      for (const d of outside.doors) {
+        const near = here === d;
+        signRects.set(d, drawSign(near ? "▲ 들어가기" : d.name, d.door.x + d.door.w / 2, d.door.y - 6, t, near));
+      }
+    } else if (scene.exit) {
+      const c = exitCenter();
+      signRects.set("exit", drawSign("▼ 나가기", c.x, scene.exit.y - 6, t, nearExit()));
+    }
+  }
+  // 시험용 손잡이(콘솔에서 상태 확인·장면 이동)
+  window.__village = {
+    get scene() { return scene.id; },
+    player, rooms, outside,
+    enter: id => enterDoor(outside.doors.find(d => d.room === id)),
+    leave: () => leaveRoom(),
+    get busy() { return busy; },
+    toScreen: (x, y) => ({ x: (x - cam.x) * scale / dpr, y: (y - cam.y) * scale / dpr }),
+    get route() { return { target, route: route.slice(), pendingDoor: pendingDoor?.room || null }; },
+    blocked: (x, y) => hitsBlocker(x, y),
+    get speech() { return speechEl.hidden ? null : { name: nameEl.textContent, text: textEl.textContent }; },
+  };
+
   // ── 메인 루프 ────────────────────────────────────────────
   let last = performance.now();
   function frame(now) {
+    step(now);
+    requestAnimationFrame(frame);
+  }
+  // 시험용: 화면이 가려져 requestAnimationFrame 이 멈춰도 n 프레임을 직접 돌려 본다
+  window.__village.tick = (n = 1, ms = 1000 / 60) => { for (let i = 0; i < n; i++) step(last + ms); };
+  function step(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     const t = now / 1000;
 
     // 이동
     let dx = 0, dy = 0;
-    if (keys.size) {
+    if (busy) {
+      // 장면 전환 중에는 멈춰 있는다
+    } else if (keys.size) {
       if (keys.has("left")) dx -= 1;
       if (keys.has("right")) dx += 1;
       if (keys.has("up")) dy -= 1;
@@ -656,12 +950,13 @@
       const ddx = target.x - player.x, ddy = target.y - player.y;
       const d = Math.hypot(ddx, ddy);
       const step = player.speed * dt;
-      if (d <= Math.max(step, 2)) { target = null; }
+      if (d <= Math.max(step, 2)) { target = route.length ? route.shift() : null; }
       else { dx = ddx / d * step; dy = ddy / d * step; }
     }
     player.moving = false;
     if (dx !== 0 || dy !== 0) {
       if (dx !== 0) player.facing = dx < 0 ? -1 : 1;
+      player.dir = Math.abs(dx) > Math.abs(dy) * 1.2 ? "side" : dy < 0 ? "up" : "down";
       const before = { x: player.x, y: player.y };
       const moved = tryMove(dx, dy);
       if (moved && (player.x !== before.x || player.y !== before.y)) {
@@ -669,13 +964,23 @@
         player.walkT += dt;
         if (!hasMoved) { hasMoved = true; hideTitle(); }
       } else if (target) {
-        target = null; // 막혔으면 멈춤
+        target = null; route = []; // 막혔으면 멈춤
       }
+    }
+
+    // 문: 발판에서 위로 가려 하거나(↑·W) 문을 눌러 걸어온 길이면 들어간다
+    const here = doorHere();
+    if (here && (keys.has("up") || pendingDoor === here)) enterDoor(here);
+    else if (pendingDoor && !target) pendingDoor = null;   // 가다가 막혀 멈췄으면 취소
+    // 실내 문 깔개: 한 번 벗어났다가 다시 밟으면 나간다
+    if (scene.exit && !busy) {
+      if (!inRect(player.x, player.y, scene.exit)) exitArmed = true;
+      else if (exitArmed) leaveRoom();
     }
 
     // 근처 NPC
     let near = null, nd = Infinity;
-    for (const n of npcs) {
+    for (const n of scene.npcs) {
       const d = dist(n, player);
       if (d < nd) { nd = d; near = n; }
     }
@@ -698,7 +1003,7 @@
     updateCamera();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = "#3b2a20";
+    ctx.fillStyle = scene.bg || "#3b2a20";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(scale, 0, 0, scale, -cam.x * scale, -cam.y * scale);
     ctx.imageSmoothingEnabled = false;
@@ -706,12 +1011,12 @@
     drawMap();
     drawTargetMark(t);
 
-    const ents = [player, ...npcs].sort((a, b) => a.y - b.y);
+    const ents = [player, ...scene.npcs.filter(n => n.kind !== "thing")].sort((a, b) => a.y - b.y);
     for (const e of ents) drawEntity(e, t);
+    drawDoorSigns(t);
     if (inRange) drawBang(inRange, t);
 
-    drawMinimap(t);
-    requestAnimationFrame(frame);
+    if (scene === outside) drawMinimap(t);
   }
 
   function hideTitle() {
