@@ -435,22 +435,27 @@
     musicBtn.textContent = on ? "♪ 음악 끄기" : "♪ 음악";
     musicBtn.setAttribute("aria-label", on ? "배경음악 끄기" : "배경음악 켜기");
   }
-  function playMusic() { music.play().then(renderMusic).catch(renderMusic); }
-  // 브라우저는 첫 손길 뒤에만 소리를 허락한다 — 처음 움직일 때 조용히 켠다
+  function playMusic() { return music.play().then(renderMusic).catch(() => { renderMusic(); throw 0; }); }
+  // 열자마자 먼저 틀어 본다. 브라우저가 막으면 첫 손길(어디든 누르기·아무 키) 때 바로 켠다.
   function startMusicOnce() {
-    if (musicTried || musicMuted) return;
-    musicTried = true;
-    playMusic();
+    if (musicMuted || !music.paused) return;
+    playMusic().catch(() => {});
   }
+  playMusic().catch(() => {
+    const kick = e => {
+      if (e.target?.closest?.("#musicBtn")) return;   // 음악 단추는 자기 클릭으로 켠다
+      ["pointerdown", "keydown", "touchend"].forEach(t => removeEventListener(t, kick, true));
+      startMusicOnce();
+    };
+    ["pointerdown", "keydown", "touchend"].forEach(t => addEventListener(t, kick, true));
+  });
+  // 음악 단추는 켜져 있으면 끄고, 꺼져 있으면 켠다
   musicBtn.addEventListener("click", () => {
-    musicTried = true;
-    if (music.paused) { musicMuted = false; playMusic(); }
+    if (music.paused) { musicMuted = false; playMusic().catch(() => {}); }
     else { musicMuted = true; music.pause(); renderMusic(); }
   });
   music.addEventListener("pause", renderMusic);
   music.addEventListener("play", renderMusic);
-  addEventListener("keydown", e => { if (KEYMAP[e.key]) startMusicOnce(); });
-  canvas.addEventListener("pointerdown", startMusicOnce);
 
   function updateCamera() {
     const cx = player.x - viewW / 2;
