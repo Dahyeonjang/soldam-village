@@ -15,9 +15,10 @@ const MAP = { src: "map.png", width: 2752, height: 1536 };
 // 방문자(플레이어). x,y = 발 위치. speed = 초당 이동 픽셀.
 // frames = 걷기 그림(방향마다 [서기, 걸음 A, 걸음 B]). side 는 오른쪽을 보는 그림이고 왼쪽은 엔진이 뒤집는다.
 // frames 를 지우면 src 한 장으로 통통 튀며 걷는다.
-const walk = d => [0, 1, 2].map(i => `sprites/player_${d}_${i}.png`);
+const PV = "?v=20261026-tee";   // 플레이어 그림을 바꾸면 이 꼬리표도 바꾼다(캐시에 옛 그림이 남지 않게)
+const walk = d => [0, 1, 2].map(i => `sprites/player_${d}_${i}.png${PV}`);
 const PLAYER = {
-  src: "sprites/player.png", ...at(1100, 600), speed: 150,
+  src: "sprites/player.png" + PV, ...at(1100, 600), speed: 150,
   frames: { down: walk("down"), up: walk("up"), side: walk("side") },
 };
 
